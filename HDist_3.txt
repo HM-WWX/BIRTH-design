@@ -1,0 +1,37 @@
+model{
+  
+  for (t in 1:2){
+     for ( m in 1: kMod ){   
+       resp_con[t,m] ~ dbin(p_h[t,m], con.numbers[t,m])
+       logit(p_h[t,m]) <- theta[t,m]
+       
+  }
+}
+     for (m in 1:kMod) {
+       theta[1,m] <- Prior.theta[m]+Prior.sd.theta[m]*theta_01[m]
+       theta_01[m] ~ dnorm(0,1)
+}
+     for (j in 1:kMod){
+        for(q in 1:kMod){
+          phiH[q, j] <- sqrt(1/2*pow(abs(theta[1,j]-theta[1,q]),2))
+          norm.phiH[q, j] <- exp(-phiH[q, j]/s0)
+          wss[q, j] <- phiH[q, j] - equals(q, j) + 0.000001
+          wsss[q,j] <- 1/ wss[q, j]    
+          D01[q, j] ~ dunif(0.1,1)
+          nu0[q, j] <- lSlab+(uSlab - lSlab)*(wsss[q,j])*D01[q, j]
+          nu[q, j] <- nu0[q, j]*step(uSlab-nu0[q, j]) + spike*step(nu0[q, j]-uSlab)
+          pred.mu.theta[q, j] <- theta[1,j]+cms.mu[q, j]*1/nu[q,j]*(1 - equals(q, j))
+          cms.mu[q, j] ~ dnorm(0,1)
+       } 
+        sum.norm.phiH[j] <- sum(norm.phiH[j,]) - 1
+        
+        for(q in 1:kMod){
+             p0[q, j] <- norm.phiH[q, j]/(sum.norm.phiH[q]+1e-100)
+             V[q, j] <- 1 - equals(q, j)
+             pmix[q, j] <- inprod(p0[q, j], V[q, j])
+             r.theta.star[q, j] <- inprod(pmix[q, j], pred.mu.theta[q, j])
+     }    
+        theta[2,j] <- sum(r.theta.star[j,])
+  } 
+          
+}
