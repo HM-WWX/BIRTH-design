@@ -1,2 +1,2 @@
-# DAW-MAP
-BIRTH : Bayesian dynamic information borrowing for hybrid control basket trials.
+# BIRTH : Bayesian dynamic information borrowing for hybrid control basket trials.
+
