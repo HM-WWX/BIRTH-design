@@ -32,8 +32,8 @@ library(openxlsx)
 
 MAP_only <- function(trt.effect_f,mu.cur_f,mu.history_f){
 # 设置并行集群，使用3个核
-num_cores <- 40
-cl <- makeSOCKcluster(num_cores)
+num_cores <- 30
+cl <- makeSOCKcluster(num_cores, type = "SOCK")
 registerDoSNOW(cl)
 
 #init_values <- list(
@@ -44,7 +44,7 @@ registerDoSNOW(cl)
 ssize <- 1000
 
 
-set.seed(1234)  # 主种子
+set.seed(123456)  # 主种子
 task_seeds <- sample(1:1e6, ssize)
 
 
@@ -64,12 +64,6 @@ mu.history <- mu.history_f
 n.subtrial <- length(mu.cur)
 Y.cur.control <- list()
 Y.cur.treat <- list()
-Hist.Prior.theta <- c()
-Hist.Prior.sd.theta <- c()
-All.trials_con <- c()
-All.trials_trt <- c()
-Prior.theta.Hist <- list()
-Prior.theta.sd.Hist <- list()
 subtrial_trt_p <- c()
 subtrial_con_p <- c()
 subtrial_trt_p_95CI <- c()
@@ -82,6 +76,7 @@ power_R <- list()
 power_counter <- c(0,0,0,0,0)
 ESS_con_CPP <- c()
 ESS <- list()
+MAP_model_p_con <- list()
 
  results <- foreach(n = 1:ssize,.combine= "c", .packages = c('psrwe', "do","dplyr",'MASS', 'boot',
                             "lattice","tidyverse","patchwork","R2jags",
@@ -124,7 +119,7 @@ ESS <- list()
         Y = matrix(0, N)
         for (i in 1:N) {
           xb = t(beta) %*% X[i, ]
-          logit_P = xb  + study.effect+ rnorm(1,0,0.25)
+          logit_P = xb  + study.effect + rnorm(1,0,1)
           P = boot::inv.logit(logit_P)
           Y[i, ] = rbinom(1,1,P)
         }
@@ -139,7 +134,7 @@ ESS <- list()
         Y = matrix(0, N)
         for (i in 1:N) {
           xb = t(beta) %*% X[i, ]
-          logit_P = xb + trt.effect+ rnorm(1,0,0.25)
+          logit_P = xb + trt.effect + rnorm(1,0,1)
           P = boot::inv.logit(logit_P) 
           Y[i, ] = rbinom(1,1,P)
         }
@@ -176,8 +171,8 @@ ESS <- list()
       mu.hist <- mu.history[i] 
       mu.cur.con <- mu.cur[i] # p=9, muc=0.5
       
-      S0 = diag(x = rep(0.25^2, p))
-      S0[which(S0 == 0)] = rho * (0.25^2)
+      S0 = diag(x = rep(0.15^2, p))
+      S0[which(S0 == 0)] = rho * (0.15^2)
       
       hist.list <- list()
       X.hist <- X.hist.init <- list()
@@ -293,7 +288,7 @@ ESS <- list()
           #estimate stratum-specific MAP prior
           for(i in 1:n.strata){
             if (overlap_coefficients[i]==0){
-              tau.balance[i] <- 0.1
+              tau.balance[i] <- 0.01
             }else {
               tau.balance[i] <- overlap_coefficients[i]
             }
@@ -307,10 +302,10 @@ ESS <- list()
             
             model <-
               jags.model(
-                file = "//home//wwx//NEW-WWX.txt",
+                file = "//home//wwx//work_1代码//NEW-WWX.txt",
                 data = dataTemp,
                 n.chains = 1,
-                n.adapt = 5000,
+                n.adapt = 8000,
                 quiet = TRUE,
                 inits = init_values
               )
@@ -330,8 +325,11 @@ ESS <- list()
           posterior.indiv <- postmix(mix.res, n = length(data.indiv), r = sum(data.indiv))
           mu.con_fat <- rmix(posterior.indiv, n=10000)
           mu.con_p <- mu.con_fat[seq(1, length(mu.con_fat), by=10)]
+          
+          No_borrowing <- rbeta(1000,0.5+Ybar.hist[i],0.5+con.numbers[i]-Ybar.hist[i])
+          ESS_MAP <- con.numbers[i]*var(No_borrowing)/var(theta[1,])
           #calculate ESS
-          ess.res = c(ess.res, ess(mix.res, method = "elir"))
+          ess.res = c(ess.res, ESS_MAP)
           if(abs(ess.res[length(ess.res)] - target.ESS) <= 1 ){
             stop = TRUE
           }else if(ess.res[length(ess.res)]-target.ESS > 1 && iter_count <= 50) {
@@ -351,18 +349,14 @@ ESS <- list()
           #print(low)
           #print(high)
         }
-        results = list(mix.res, ess.res[length(ess.res)],theta,mu.con_p)
+        results = list(ess.res[length(ess.res)],theta,mu.con_p)
         return(results)
       }
-      DAW_MAP <- DAW_MAP.fit(tau.init = 0.8, target.ESS = target.ESS, std_heterogeneity = 0.4,
+      DAW_MAP <- DAW_MAP.fit(tau.init = 0.8, target.ESS = target.ESS, std_heterogeneity = 0.5,
                              n.cur.stratum=n.cur.stratum, Ybar.hist=Ybar.hist, n.hist.stratum=n.hist.stratum, 
-                             overlap_coefficients = overlap_coefficients, niter = 15000,lim=c(0.01,1.26),data.indiv = y.control)  
+                             overlap_coefficients = overlap_coefficients, niter = 18000,lim=c(0.01,1.26),data.indiv = y.control)  
     
-    All.p.pred <- as.numeric(DAW_MAP[[3]])
-    All.theta <- logit(All.p.pred)
-    DAW_MAP.prior[[i]] <- All.theta
-    Hist.Prior.theta[i] <- mean(All.theta)
-    Hist.Prior.sd.theta[i] <- var(All.theta)
+    MAP_model_p_con[[i]] <- as.numeric(DAW_MAP[[3]])
   }
   
 ##############################Treat group CPP###################################
@@ -377,7 +371,7 @@ ESS <- list()
                           "Prior.sd.theta_p"=Prior.sd.theta_trt,"kMod"=kMod) 
     model_posterior_trt <-
       jags.model(
-        file = "//home//wwx//Posterior.txt",
+        file = "//home//wwx//work_1代码//Posterior.txt",
         data = dataTemp_p_trt,
         n.chains = 1,
         n.adapt = 8000,
@@ -393,39 +387,17 @@ ESS <- list()
                    progress.bar = 'none',
                    na.rm = TRUE)
 #############################Control group posterior############################ 
-    Prior.theta_con <- Hist.Prior.theta
-    Prior.sd.theta_con <- 1/Hist.Prior.sd.theta
-################################################################################
-    dataTemp_p_con <-list("resp_p"=resp_con,"n_p"=con.numbers,"Prior.theta_p"=Prior.theta_con,
-                          "Prior.sd.theta_p"=Prior.sd.theta_con,"kMod"=kMod) 
-    model_posterior_con <-
-      jags.model(
-        file = "//home//wwx//Posterior.txt",
-        data = dataTemp_p_con,
-        n.chains = 1,
-        n.adapt = 8000,
-        quiet = TRUE,
-        inits=init_values
-      )
-    update(model_posterior_con, n.iter = 18000, progress.bar = 'none') # burn in
-    MAP_model_p_con<-
-      coda.samples(model_posterior_con,
-                   variable.names = "theta_p",
-                   thin = 10,
-                   n.iter = 10000, 
-                   progress.bar = 'none',
-                   na.rm = TRUE)
     for (j in 1:kMod){
-    subtrial_con_p[j]<-mean(plogis(MAP_model_p_con[[1]][,j]))
-    subtrial_con_p_95CI[j] <- smean.cl.normal(plogis(MAP_model_p_con[[1]][,j]))[3]-smean.cl.normal(plogis(MAP_model_p_con[[1]][,j]))[2]
+    subtrial_con_p[j]<-mean(MAP_model_p_con[[j]])
+    subtrial_con_p_95CI[j] <- smean.cl.normal(MAP_model_p_con[[j]])[3]-smean.cl.normal(MAP_model_p_con[[j]])[2]
     No_borrowing_con_p <- rbeta(1000,0.5+resp_con[j],0.5+con.numbers[j]-resp_con[j])
-    ESS_con_CPP[j] <- con.numbers[j]*var(No_borrowing_con_p)/var(plogis(MAP_model_p_con[[1]][,j])) 
+    ESS_con_CPP[j] <- con.numbers[j]*var(No_borrowing_con_p)/var(MAP_model_p_con[[j]]) 
     
     subtrial_trt_p[j]<-mean(plogis(MAP_model_p_trt[[1]][,j]))
     subtrial_trt_p_95CI[j] <-  smean.cl.normal(plogis(MAP_model_p_trt[[1]][,j]))[3]-smean.cl.normal(plogis(MAP_model_p_trt[[1]][,j]))[2]
     
     trt.response <- as.matrix(MAP_model_p_trt[[1]][,j])
-    con.response <- as.matrix(MAP_model_p_con[[1]][,j])
+    con.response <- as.matrix(logit(MAP_model_p_con[[j]]))
     trt.difference <- trt.response - con.response
     power <- sum(trt.difference >= 0)
    if (power >= 950){
@@ -476,11 +448,11 @@ subtrial_con_95CI_all <- subtrial_con_95CI_all[-1,]
 ESS.ALL <- ESS.ALL[-1,]
 ESS.ALL <- ESS.ALL[!apply(ESS.ALL, 1, function(x) any(is.infinite(x))), ]
 
-aa1 <- mean(subtrial_con_all[,1])
-bb1 <- mean(subtrial_con_all[,2])
-cc1 <- mean(subtrial_con_all[,3])
-dd1 <- mean(subtrial_con_all[,4])
-ee1 <- mean(subtrial_con_all[,5])
+aa1 <- mean(subtrial_con_all[,1])-plogis(mu.cur[1]*7)
+bb1 <- mean(subtrial_con_all[,2])-plogis(mu.cur[2]*7)
+cc1 <- mean(subtrial_con_all[,3])-plogis(mu.cur[3]*7)
+dd1 <- mean(subtrial_con_all[,4])-plogis(mu.cur[4]*7)
+ee1 <- mean(subtrial_con_all[,5])-plogis(mu.cur[5]*7)
 
 subtrial_con_mean <- c(aa1,bb1,cc1,dd1,ee1)
 
@@ -532,8 +504,37 @@ ee7 <- mean(ESS.ALL[,5])
 
 subtrial_ESS <- c(aa7,bb7,cc7,dd7,ee7) 
 
+################################################################################
+# 新增模块：计算 Family-Wise Type I Error Rate (FWER)
+################################################################################
+
+# 1. 识别哪些亚组是“零假设为真”（即真实疗效 trt.effect 为 0）
+null_indices <- which(abs(trt.effect) < 0.0001)
+
+# 2. 计算 FWER
+if (length(null_indices) > 0) {
+  # 仅提取那些真实无效的亚组的决策结果 (1000行 x 无效亚组数)
+  # drop=FALSE 保证即使只有1列也不会变成向量
+  null_decisions <- Power_all[, null_indices, drop = FALSE]
+  
+  # 对每一次模拟(每一行)，检查是否出现了至少一个 1 (错误阳性)
+  is_family_error <- rowSums(null_decisions) > 0
+  
+  # 计算概率
+  fwer_value <- mean(is_family_error)
+} else {
+  # 如果所有亚组都是有效的（例如全有效场景），则不存在 Type I Error，FWER 为 0
+  fwer_value <- 0
+}
+
+# 3. 构造输出向量 (为了保持输出格式统一，复制5次)
+subtrial_FWER <- rep(fwer_value, n.subtrial)
+
+################################################################################
+
+
 results_final = list(subtrial_con_mean, subtrial_trt_mean,subtrial_con_mse,subtrial_trt_95CI,
-               subtrial_con_95CI,subtrial_Power,subtrial_ESS)
+               subtrial_con_95CI,subtrial_Power,subtrial_ESS, subtrial_FWER)
 
 return(results_final)
 
@@ -544,155 +545,181 @@ stopCluster(cl)
 
 }
 
-MAP_only_results <- createWorkbook()
 MAP_only_results_1 <- createWorkbook()
 MAP_only_results_2 <- createWorkbook()
 MAP_only_results_3 <- createWorkbook()
+MAP_only_results_4 <- createWorkbook()
+MAP_only_results_5 <- createWorkbook()
+
 #Scenario 1
-Scenario_1 <- MAP_only(trt.effect <- c(1.386294,1.386294,1.386294,1.386294,1.386294),
-                           mu.cur <- c(0,0,0,0,0), 
-                           mu.history <- c(0,0,0,0,0))
+Scenario_1 <- MAP_only(trt.effect <- c(0.9808293,0.9808293,0.9808293,0.9808293,0.9808293),
+                       mu.cur <- c(0.05792359,0.05792359,0.05792359,0.05792359,0.05792359),
+                       mu.history <- c(0.05792359,0.05792359,0.05792359,0.05792359,0.05792359))
 
 Scenario_1_results <- do.call(rbind, lapply(Scenario_1, function(x) as.data.frame(t(x))))
 
+
 #Scenario 2
-Scenario_2 <- MAP_only(trt.effect <- c(0.9808293,0.9808293,0.9808293,0.9808293,0.9808293),
-                           mu.cur <- c(0.05792359,0.05792359,0.05792359,0.05792359,0.05792359),
-                           mu.history <- c(0.05792359,0.05792359,0.05792359,0.05792359,0.05792359))
+Scenario_2 <- MAP_only(trt.effect <- c(0,0,0,0,0),
+                       mu.cur <- c(0.1980421,0.1980421,0.1980421,0.1980421,0.1980421), 
+                       mu.history <- c(0.1980421,0.1980421,0.1980421,0.1980421,0.1980421))
 
 Scenario_2_results <- do.call(rbind, lapply(Scenario_2, function(x) as.data.frame(t(x))))
 
+
 #Scenario 3
-Scenario_3 <- MAP_only(trt.effect <- c(0.5389965,0.5389965,0.5389965,0.5389965,0.5389965),
-                           mu.cur <- c(0.1210426,0.1210426,0.1210426,0.1210426,0.1210426), 
-                           mu.history <- c(0.1210426,0.1210426,0.1210426,0.1210426,0.1210426))
+Scenario_3 <- MAP_only(trt.effect <- c(0.9808293,0.8472979,0.8109302,0.8472979,0.9808293),
+                       mu.cur <- c(0.05792359,0,-0.05792359,-0.1210426,-0.1980421),
+                       mu.history <- c(0.05792359,0,-0.05792359,-0.1210426,-0.1980421))
 
 Scenario_3_results <- do.call(rbind, lapply(Scenario_3, function(x) as.data.frame(t(x))))
-
-#Scenario 4
-Scenario_4 <- MAP_only(trt.effect <- c(0,0,0,0,0),
-                           mu.cur <- c(0.1980421,0.1980421,0.1980421,0.1980421,0.1980421), 
-                           mu.history <- c(0.1980421,0.1980421,0.1980421,0.1980421,0.1980421))
-
-Scenario_4_results <- do.call(rbind, lapply(Scenario_4, function(x) as.data.frame(t(x))))
 
 #############################################################################################
 addWorksheet(MAP_only_results_1, "Sheet1")
 writeData(MAP_only_results_1, "Sheet1", x = NULL)
 writeData(MAP_only_results_1, sheet = "Sheet1", c(Scenario_1_results,Scenario_2_results,
-                                                  Scenario_3_results,Scenario_4_results))
+                                                  Scenario_3_results))
 saveWorkbook(MAP_only_results_1, "MAP_only_1_output.xlsx", overwrite = TRUE)
 ##############################################################################################
 
+#Scenario 4
+Scenario_4 <- MAP_only(trt.effect <- c(0,0,0,0,0),
+                       mu.cur <- c(0.1980421,0.1210426,0.05792359,0,-0.05792359), 
+                       mu.history <- c(0.1980421,0.1210426,0.05792359,0,-0.05792359))
+
+Scenario_4_results <- do.call(rbind, lapply(Scenario_4, function(x) as.data.frame(t(x))))
+
 #Scenario 5
-Scenario_5 <- MAP_only(trt.effect <- c(0.9808293,0.8979416,0.8472979,0.8197099,0.8109302),
-                           mu.cur <- c(0.05792359,0.02866724,0,0.02866724,-0.05792359), 
-                           mu.history <- c(0.05792359,0.02866724,0,0.02866724,-0.05792359))
+Scenario_5 <- MAP_only(trt.effect <- c(0.9808293,0.9808293,0.9808293,0,0),
+                       mu.cur <- c(0.05792359,0.05792359,0.05792359,0.1980421,0.1980421), 
+                       mu.history <- c(0.05792359,0.05792359,0.05792359,0.19804219,0.1980421))
 
 Scenario_5_results <- do.call(rbind, lapply(Scenario_5, function(x) as.data.frame(t(x))))
 
 #Scenario 6
-Scenario_6 <- MAP_only(trt.effect <- c(0.9808293,0.8472979,0.8109302,0.8472979,0.9808293),
-                           mu.cur <- c(0.05792359,0,-0.05792359,-0.1210426,-0.1980421),
-                           mu.history <- c(0.05792359,0,-0.05792359,-0.1210426,-0.1980421))
+Scenario_6 <- MAP_only(trt.effect <- c(0.9808293,0,0.8109302,0,0.9808293),
+                       mu.cur <- c(0.05792359,0.1210426,-0.05792359,0,-0.1980421), 
+                       mu.history <- c(0.05792359,0.1210426,-0.05792359,0,-0.1980421))
 
 Scenario_6_results <- do.call(rbind, lapply(Scenario_6, function(x) as.data.frame(t(x))))
+#############################################################################################
+addWorksheet(MAP_only_results_2, "Sheet1")
+writeData(MAP_only_results_2, "Sheet1", x = NULL)
+writeData(MAP_only_results_2, sheet = "Sheet1", c(Scenario_4_results,Scenario_5_results,
+                                                  Scenario_6_results))
+saveWorkbook(MAP_only_results_2, "MAP_only_2_output.xlsx", overwrite = TRUE)
+##############################################################################################
 
 #Scenario 7
 Scenario_7 <- MAP_only(trt.effect <- c(0,0,0,0,0),
-                           mu.cur <- c(0.1980421,0.1569446,0.1210426,0.08843417,0.05792359), 
-                           mu.history <- c(0.1980421,0.1569446,0.1210426,0.08843417,0.05792359))
+                       mu.cur <- c(0.1980421,0.1980421,0.1980421,0.1980421,0.1980421), 
+                       mu.history <- c(0.2478002,0.2478002,0.2478002,0.2478002,0.2478002))
 
 Scenario_7_results <- do.call(rbind, lapply(Scenario_7, function(x) as.data.frame(t(x))))
 
 #Scenario 8
 Scenario_8 <- MAP_only(trt.effect <- c(0,0,0,0,0),
-                           mu.cur <- c(0.1980421,0.1210426,0.05792359,0,-0.05792359), 
-                           mu.history <- c(0.1980421,0.1210426,0.05792359,0,-0.05792359))
+                       mu.cur <- c(0.1980421,0.1980421,0.1980421,0.1980421,0.1980421), 
+                       mu.history <- c(0.1569446,0.1569446,0.1569446,0.1569446,0.1569446))
 
 Scenario_8_results <- do.call(rbind, lapply(Scenario_8, function(x) as.data.frame(t(x))))
 
-#############################################################################################
-addWorksheet(MAP_only_results_2, "Sheet1")
-writeData(MAP_only_results_2, "Sheet1", x = NULL)
-writeData(MAP_only_results_2, sheet = "Sheet1", c(Scenario_5_results,Scenario_6_results,
-                                                      Scenario_7_results,Scenario_8_results))
-saveWorkbook(MAP_only_results_2, "MAP_only_2_output.xlsx", overwrite = TRUE)
-##############################################################################################
-
 #Scenario 9
-Scenario_9 <- MAP_only(trt.effect <- c(0.9808293,0.9808293,0.9808293,0.9808293,0),
-                           mu.cur <- c(0.05792359,0.05792359,0.05792359,0.05792359,0.1980421), 
-                           mu.history <- c(0.05792359,0.05792359,0.05792359,0.05792359,0.1980421))
+Scenario_9 <- MAP_only(trt.effect <- c(0,0,0,0,0),
+                       mu.cur <- c(0.1980421,0.1210426,0.05792359,0,-0.05792359),
+                       mu.history <- c(0.2478002,0.1569446,0.08843417,0.02866724,-0.02866724))
 
 Scenario_9_results <- do.call(rbind, lapply(Scenario_9, function(x) as.data.frame(t(x))))
 
 #Scenario 10
-Scenario_10 <- MAP_only(trt.effect <- c(0.9808293,0.9808293,0.9808293,0,0),
-                            mu.cur <- c(0.05792359,0.05792359,0.05792359,0.1980421,0.1980421), 
-                            mu.history <- c(0.05792359,0.05792359,0.05792359,0.19804219,0.1980421))
-
+Scenario_10 <- MAP_only(trt.effect <- c(0,0,0,0,0),
+                        mu.cur <- c(0.1980421,0.1210426,0.05792359,0,-0.05792359), 
+                        mu.history <- c(0.1569446,0.08843417,0.02866724,-0.02866724,-0.08843417))
 Scenario_10_results <- do.call(rbind, lapply(Scenario_10, function(x) as.data.frame(t(x))))
-
-#Scenario 11
-Scenario_11 <- MAP_only(trt.effect <- c(0.9808293,0,0.8109302,0,0.9808293),
-                            mu.cur <- c(0.05792359,0.1210426,-0.05792359,0,-0.1980421), 
-                            mu.history <- c(0.05792359,0.1210426,-0.05792359,0,-0.1980421))
-
-Scenario_11_results <- do.call(rbind, lapply(Scenario_11, function(x) as.data.frame(t(x))))
-
-#Scenario 12
-Scenario_12 <- MAP_only(trt.effect <- c(0.9808293,0,0.8472979,0,0.8109302),
-                            mu.cur <- c(0.05792359,0.1569446,0,0.08843417,-0.05792359), 
-                            mu.history <- c(0.05792359,0.1569446,0,0.08843417,-0.05792359))
-
-Scenario_12_results <- do.call(rbind, lapply(Scenario_12, function(x) as.data.frame(t(x))))
-
 #############################################################################################
 addWorksheet(MAP_only_results_3, "Sheet1")
 writeData(MAP_only_results_3, "Sheet1", x = NULL)
-writeData(MAP_only_results_3, sheet = "Sheet1", c(Scenario_9_results,Scenario_10_results,
-                                                      Scenario_11_results,Scenario_12_results))
+writeData(MAP_only_results_3, sheet = "Sheet1", c(Scenario_7_results,Scenario_8_results,
+                                                  Scenario_9_results,Scenario_10_results))
 saveWorkbook(MAP_only_results_3, "MAP_only_3_output.xlsx", overwrite = TRUE)
 ##############################################################################################
 
+
+# random_mu.cur <- round(runif(5, min = 0, max = 1), 1)
+# random_trt.effect <- round(runif(1,min=0.5,max=1),1)
+# logit(random_mu.cur)/7
+# 
+# 
+#Scenario 11
+Scenario_11 <- MAP_only(trt.effect <- c(0.5389965,0,0.8472979,1.252763,0),
+                        mu.cur <- c(0.12104255,0.05792359,-0.12104255,-0.0579235,0.12104255),
+                        mu.history <- c(0.12104255,0.05792359,-0.12104255,-0.0579235,0.12104255))
+
+Scenario_11_results <- do.call(rbind, lapply(Scenario_11, function(x) as.data.frame(t(x))))
+
+
+#Scenario 12
+Scenario_12 <- MAP_only(trt.effect <- c(3.044522,0,0.4054651,0,2.197225),
+                        mu.cur <- c(-0.12104255,0.12104255,-0.0579235,0.3138892,0),
+                        mu.history <- c(-0.12104255,0.12104255,-0.0579235,0.3138892,0))
+
+Scenario_12_results <- do.call(rbind, lapply(Scenario_12, function(x) as.data.frame(t(x))))
+
+
 #Scenario 13
-Scenario_13 <- MAP_only(trt.effect <- c(0,0,0,0,0),
-                            mu.cur <- c(0.1980421,0.1980421,0.1980421,0.1980421,0.1980421), 
-                            mu.history <- c(0.2478002,0.2478002,0.2478002,0.2478002,0.2478002))
+Scenario_13 <- MAP_only(trt.effect = c(0, 0, 2.6026897, 0.4418328, 1.3499267),
+                        mu.cur = c(0.05792359, -0.12104255, -0.05792359, -0.12104255, -0.31388923),
+                        mu.history = c(0.05792359, -0.12104255, -0.05792359, -0.12104255, -0.31388923))
 
 Scenario_13_results <- do.call(rbind, lapply(Scenario_13, function(x) as.data.frame(t(x))))
+#
+#############################################################################################
+addWorksheet(MAP_only_results_4, "Sheet1")
+writeData(MAP_only_results_4, "Sheet1", x = NULL)
+writeData(MAP_only_results_4, sheet = "Sheet1", c(Scenario_11_results,Scenario_12_results,
+                                                  Scenario_13_results))
+saveWorkbook(MAP_only_results_4, "MAP_only_4_output.xlsx", overwrite = TRUE)
+##############################################################################################
 
-#Scenario 14
-Scenario_14 <- MAP_only(trt.effect <- c(0,0,0,0,0),
-                            mu.cur <- c(0.1980421,0.1980421,0.1980421,0.1980421,0.1980421), 
-                            mu.history <- c(0.1569446,0.1569446,0.1569446,0.1569446,0.1569446))
+##############################################################################################
+# 新增3个场景：响应审稿人关于 Heterogeneous Effect Sizes (0.1, 0.2, 0.3) 的建议
+# 旨在评估模型在梯度效应、以及强弱信号不对称分布下的稳健性
+##############################################################################################
 
+# 基础设定参考：
+# Mu = 0 (Base Rate ~ 0.5)
+# Delta = 0.1 -> trt.effect approx 0.4055
+# Delta = 0.3 -> trt.effect approx 1.3863
+# Null -> 0
+
+# Scenario 14: 梯度效应场景 (Gradient Effect)
+# 目的：测试模型区分不同疗效层次 (Null, 0.1, 0.2, 0.3) 的能力
+# # 设置: Null, 0.1, 0.2, 0.3, 0.2
+Scenario_14 <- MAP_only(trt.effect = c(0, 0.4054651, 0.8472979, 1.386294, 0.8472979),
+                        mu.cur = c(0, 0, 0, 0, 0), mu.history = c(0, 0, 0, 0, 0))
 Scenario_14_results <- do.call(rbind, lapply(Scenario_14, function(x) as.data.frame(t(x))))
-
-#Scenario 15
-Scenario_15 <- MAP_only(trt.effect <- c(0,0,0,0,0),
-                            mu.cur <- c(0.1980421,0.1210426,0.05792359,0,-0.05792359),
-                            mu.history <- c(0.2478002,0.1569446,0.08843417,0.02866724,-0.02866724))
-
+#
+#
+# # Scenario 15: 弱信号主导场景 (Weak Signal Dominance / Single Strong Outlier)
+# # 目的：测试单个强信号是否会过度拉高周围的弱信号。
+# # 设置: 0.3 (强), 0.1, 0.1, 0.1, 0 (无效)
+Scenario_15 <- MAP_only(trt.effect = c(1.386294, 0.4054651, 0.4054651, 0.4054651, 0),
+                        mu.cur = c(0, 0, 0, 0, 0),mu.history = c(0, 0, 0, 0, 0))
 Scenario_15_results <- do.call(rbind, lapply(Scenario_15, function(x) as.data.frame(t(x))))
-
-#Scenario 16
-Scenario_16 <- MAP_only(trt.effect <- c(0,0,0,0,0),
-                            mu.cur <- c(0.1980421,0.1210426,0.05792359,0,-0.05792359), 
-                            mu.history <- c(0.1569446,0.08843417,0.02866724,-0.02866724,-0.08843417))
-
+#
+#
+# # Scenario 16: 强信号主导场景 (Strong Signal Dominance / Single Weak Outlier)
+# # 目的：这是最关键的“膨胀测试”。测试当大多数亚组效果很好时，唯一的弱亚组是否会被错误地“拉高”从而导致误判。
+# # 设置: 0.1 (弱 - 重点观察对象), 0.3, 0.3, 0.3, 0.3 (全是强)
+Scenario_16 <- MAP_only(trt.effect = c(0.4054651, 1.386294, 1.386294, 1.386294, 1.386294),
+                        mu.cur = c(0, 0, 0, 0, 0),mu.history = c(0, 0, 0, 0, 0))
 Scenario_16_results <- do.call(rbind, lapply(Scenario_16, function(x) as.data.frame(t(x))))
-addWorksheet(MAP_only_results, "Sheet1")
-writeData(MAP_only_results, "Sheet1", x = NULL)
-writeData(MAP_only_results, sheet = "Sheet1", c(Scenario_1_results,Scenario_2_results,Scenario_3_results,
-                                                    Scenario_4_results,Scenario_5_results,Scenario_6_results,
-                                                    Scenario_7_results,Scenario_8_results,Scenario_9_results,
-                                                    Scenario_10_results,Scenario_11_results,Scenario_12_results,
-                                                    Scenario_13_results,Scenario_14_results,Scenario_15_results,
-                                                    Scenario_16_results))
-saveWorkbook(MAP_only_results, "MAP_only_output.xlsx", overwrite = TRUE)
 
-
-
+#############################################################################################
+addWorksheet(MAP_only_results_5, "Sheet1")
+writeData(MAP_only_results_5, "Sheet1", x = NULL)
+writeData(MAP_only_results_5, sheet = "Sheet1", c(Scenario_14_results,Scenario_15_results,
+                                                  Scenario_16_results))
+saveWorkbook(MAP_only_results_5, "MAP_only_5_output.xlsx", overwrite = TRUE)
+##############################################################################################
 
