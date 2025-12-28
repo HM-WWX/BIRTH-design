@@ -31,8 +31,8 @@ library(openxlsx)
 
 CPP_only <- function(trt.effect_f,mu.cur_f,mu.history_f){
 # 设置并行集群，使用3个核
-num_cores <- 40
-cl <- makeSOCKcluster(num_cores)
+num_cores <- 30
+cl <- makeSOCKcluster(num_cores, type = "SOCK")
 registerDoSNOW(cl)
 
 #init_values <- list(
@@ -43,7 +43,7 @@ registerDoSNOW(cl)
 ssize <- 1000
 
 
-set.seed(1234)  # 主种子
+set.seed(123456)  # 主种子
 task_seeds <- sample(1:1e6, ssize)
 
 
@@ -105,6 +105,7 @@ spike = 100
   tryCatch({  
   
     for (i in 1: n.subtrial){
+    setwd("//home//wwx")
     
     set.seed(task_seeds[n]+i)
     #######################
@@ -129,7 +130,7 @@ spike = 100
         Y = matrix(0, N)
         for (i in 1:N) {
           xb = t(beta) %*% X[i, ]
-          logit_P = xb  + study.effect + rnorm(1,0,0.25)
+          logit_P = xb  + study.effect + rnorm(1,0,1)
           P = boot::inv.logit(logit_P)
           Y[i, ] = rbinom(1,1,P)
         }
@@ -144,7 +145,7 @@ spike = 100
         Y = matrix(0, N)
         for (i in 1:N) {
           xb = t(beta) %*% X[i, ]  
-          logit_P = xb  + trt.effect + rnorm(1,0,0.25)
+          logit_P = xb  + trt.effect + rnorm(1,0,1)
           P = boot::inv.logit(logit_P) 
           Y[i, ] = rbinom(1,1,P)
         }
@@ -164,8 +165,8 @@ spike = 100
       ##### PSMAP simulation scenario #####
       mu.cur.con <- mu.cur[i] # p=9, muc=0.5
       
-      S1 = diag(x = rep(0.25^2, p))
-      S1[which(S1 == 0)] = rho * (0.25^2)
+      S1 = diag(x = rep(0.15^2, p))
+      S1[which(S1 == 0)] = rho * (0.15^2)
       
       
       set.seed(task_seeds[n]+i+1)
@@ -224,7 +225,7 @@ spike = 100
                        "spike" = spike)
   model_CPP_trt <-
     jags.model(
-      file = "//home//wwx//HDist_3.txt",
+      file = "//home//wwx//work_1代码//HDist_3.txt",
       data = dataTemp_trt,
       n.chains = 1,
       n.adapt = 8000,
@@ -255,7 +256,7 @@ spike = 100
                          "spike" = spike)
     model_CPP_con <-
       jags.model(
-        file = "//home//wwx//HDist_3.txt",
+        file = "//home//wwx//work_1代码//HDist_3.txt",
         data = dataTemp_con,
         n.chains = 1,
         n.adapt = 8000,
@@ -329,11 +330,11 @@ spike = 100
  ESS.ALL <- ESS.ALL[-1,]
  ESS.ALL <- ESS.ALL[!apply(ESS.ALL, 1, function(x) any(is.infinite(x))), ]
  
- aa1 <- mean(subtrial_con_all[,1])-0
- bb1 <- mean(subtrial_con_all[,2])-0
- cc1 <- mean(subtrial_con_all[,3])-0
- dd1 <- mean(subtrial_con_all[,4])-0
- ee1 <- mean(subtrial_con_all[,5])-0
+ aa1 <- mean(subtrial_con_all[,1])-plogis(mu.cur[1]*7)
+ bb1 <- mean(subtrial_con_all[,2])-plogis(mu.cur[2]*7)
+ cc1 <- mean(subtrial_con_all[,3])-plogis(mu.cur[3]*7)
+ dd1 <- mean(subtrial_con_all[,4])-plogis(mu.cur[4]*7)
+ ee1 <- mean(subtrial_con_all[,5])-plogis(mu.cur[5]*7)
  
  subtrial_con_mean <- c(aa1,bb1,cc1,dd1,ee1)
  
@@ -385,8 +386,38 @@ spike = 100
  
  subtrial_ESS <- c(aa7,bb7,cc7,dd7,ee7) 
  
+ 
+ ################################################################################
+ # 新增模块：计算 Family-Wise Type I Error Rate (FWER)
+ ################################################################################
+ 
+ # 1. 识别哪些亚组是“零假设为真”（即真实疗效 trt.effect 为 0）
+ null_indices <- which(abs(trt.effect) < 0.0001)
+ 
+ # 2. 计算 FWER
+ if (length(null_indices) > 0) {
+   # 仅提取那些真实无效的亚组的决策结果 (1000行 x 无效亚组数)
+   # drop=FALSE 保证即使只有1列也不会变成向量
+   null_decisions <- Power_all[, null_indices, drop = FALSE]
+   
+   # 对每一次模拟(每一行)，检查是否出现了至少一个 1 (错误阳性)
+   is_family_error <- rowSums(null_decisions) > 0
+   
+   # 计算概率
+   fwer_value <- mean(is_family_error)
+ } else {
+   # 如果所有亚组都是有效的（例如全有效场景），则不存在 Type I Error，FWER 为 0
+   fwer_value <- 0
+ }
+ 
+ # 3. 构造输出向量 (为了保持输出格式统一，复制5次)
+ subtrial_FWER <- rep(fwer_value, n.subtrial)
+ 
+ ################################################################################
+ 
+ 
  results_final = list(subtrial_con_mean, subtrial_trt_mean,subtrial_con_mse,subtrial_trt_95CI,
-                subtrial_con_95CI,subtrial_Power,subtrial_ESS)
+                subtrial_con_95CI,subtrial_Power,subtrial_ESS, subtrial_FWER)
  
  return(results_final)
  
@@ -399,160 +430,181 @@ spike = 100
 }
 
 
-CPP_only_results <- createWorkbook()
 CPP_only_results_1 <- createWorkbook()
 CPP_only_results_2 <- createWorkbook()
 CPP_only_results_3 <- createWorkbook()
+CPP_only_results_4 <- createWorkbook()
+CPP_only_results_5 <- createWorkbook()
 
 #Scenario 1
-Scenario_1 <- CPP_only(trt.effect <- c(1.386294,1.386294,1.386294,1.386294,1.386294),
-                       mu.cur <- c(0,0,0,0,0), 
-                       mu.history <- c(0,0,0,0,0))
+Scenario_1 <- CPP_only(trt.effect <- c(0.9808293,0.9808293,0.9808293,0.9808293,0.9808293),
+                          mu.cur <- c(0.05792359,0.05792359,0.05792359,0.05792359,0.05792359),
+                          mu.history <- c(0.05792359,0.05792359,0.05792359,0.05792359,0.05792359))
 
 Scenario_1_results <- do.call(rbind, lapply(Scenario_1, function(x) as.data.frame(t(x))))
 
+
 #Scenario 2
-Scenario_2 <- CPP_only(trt.effect <- c(0.9808293,0.9808293,0.9808293,0.9808293,0.9808293),
-                       mu.cur <- c(0.05792359,0.05792359,0.05792359,0.05792359,0.05792359),
-                       mu.history <- c(0.05792359,0.05792359,0.05792359,0.05792359,0.05792359))
+Scenario_2 <- CPP_only(trt.effect <- c(0,0,0,0,0),
+                          mu.cur <- c(0.1980421,0.1980421,0.1980421,0.1980421,0.1980421), 
+                          mu.history <- c(0.1980421,0.1980421,0.1980421,0.1980421,0.1980421))
 
 Scenario_2_results <- do.call(rbind, lapply(Scenario_2, function(x) as.data.frame(t(x))))
 
+
 #Scenario 3
-Scenario_3 <- CPP_only(trt.effect <- c(0.5389965,0.5389965,0.5389965,0.5389965,0.5389965),
-                       mu.cur <- c(0.1210426,0.1210426,0.1210426,0.1210426,0.1210426), 
-                       mu.history <- c(0.1210426,0.1210426,0.1210426,0.1210426,0.1210426))
+Scenario_3 <- CPP_only(trt.effect <- c(0.9808293,0.8472979,0.8109302,0.8472979,0.9808293),
+                          mu.cur <- c(0.05792359,0,-0.05792359,-0.1210426,-0.1980421),
+                          mu.history <- c(0.05792359,0,-0.05792359,-0.1210426,-0.1980421))
 
 Scenario_3_results <- do.call(rbind, lapply(Scenario_3, function(x) as.data.frame(t(x))))
-
-#Scenario 4
-Scenario_4 <- CPP_only(trt.effect <- c(0,0,0,0,0),
-                       mu.cur <- c(0.1980421,0.1980421,0.1980421,0.1980421,0.1980421), 
-                       mu.history <- c(0.1980421,0.1980421,0.1980421,0.1980421,0.1980421))
-
-Scenario_4_results <- do.call(rbind, lapply(Scenario_4, function(x) as.data.frame(t(x))))
 
 #############################################################################################
 addWorksheet(CPP_only_results_1, "Sheet1")
 writeData(CPP_only_results_1, "Sheet1", x = NULL)
 writeData(CPP_only_results_1, sheet = "Sheet1", c(Scenario_1_results,Scenario_2_results,
-                                                  Scenario_3_results,Scenario_4_results))
-saveWorkbook(CPP_only_results_1, "CPP_only_1_output.xlsx", overwrite = TRUE)
+                                                     Scenario_3_results))
+saveWorkbook(CPP_only_results_1, "CPP_only_results_1_output.xlsx", overwrite = TRUE)
 ##############################################################################################
 
+#Scenario 4
+Scenario_4 <- CPP_only(trt.effect <- c(0,0,0,0,0),
+                          mu.cur <- c(0.1980421,0.1210426,0.05792359,0,-0.05792359), 
+                          mu.history <- c(0.1980421,0.1210426,0.05792359,0,-0.05792359))
+
+Scenario_4_results <- do.call(rbind, lapply(Scenario_4, function(x) as.data.frame(t(x))))
+
 #Scenario 5
-Scenario_5 <- CPP_only(trt.effect <- c(0.9808293,0.8979416,0.8472979,0.8197099,0.8109302),
-                           mu.cur <- c(0.05792359,0.02866724,0,0.02866724,-0.05792359), 
-                           mu.history <- c(0.05792359,0.02866724,0,0.02866724,-0.05792359))
+Scenario_5 <- CPP_only(trt.effect <- c(0.9808293,0.9808293,0.9808293,0,0),
+                          mu.cur <- c(0.05792359,0.05792359,0.05792359,0.1980421,0.1980421), 
+                          mu.history <- c(0.05792359,0.05792359,0.05792359,0.19804219,0.1980421))
 
 Scenario_5_results <- do.call(rbind, lapply(Scenario_5, function(x) as.data.frame(t(x))))
 
 #Scenario 6
-Scenario_6 <- CPP_only(trt.effect <- c(0.9808293,0.8472979,0.8109302,0.8472979,0.9808293),
-                           mu.cur <- c(0.05792359,0,-0.05792359,-0.1210426,-0.1980421),
-                           mu.history <- c(0.05792359,0,-0.05792359,-0.1210426,-0.1980421))
+Scenario_6 <- CPP_only(trt.effect <- c(0.9808293,0,0.8109302,0,0.9808293),
+                          mu.cur <- c(0.05792359,0.1210426,-0.05792359,0,-0.1980421), 
+                          mu.history <- c(0.05792359,0.1210426,-0.05792359,0,-0.1980421))
 
 Scenario_6_results <- do.call(rbind, lapply(Scenario_6, function(x) as.data.frame(t(x))))
+#############################################################################################
+addWorksheet(CPP_only_results_2, "Sheet1")
+writeData(CPP_only_results_2, "Sheet1", x = NULL)
+writeData(CPP_only_results_2, sheet = "Sheet1", c(Scenario_4_results,Scenario_5_results,
+                                                     Scenario_6_results))
+saveWorkbook(CPP_only_results_2, "CPP_only_results_2_output.xlsx", overwrite = TRUE)
+##############################################################################################
 
 #Scenario 7
 Scenario_7 <- CPP_only(trt.effect <- c(0,0,0,0,0),
-                           mu.cur <- c(0.1980421,0.1569446,0.1210426,0.08843417,0.05792359), 
-                           mu.history <- c(0.1980421,0.1569446,0.1210426,0.08843417,0.05792359))
+                          mu.cur <- c(0.1980421,0.1980421,0.1980421,0.1980421,0.1980421), 
+                          mu.history <- c(0.2478002,0.2478002,0.2478002,0.2478002,0.2478002))
 
 Scenario_7_results <- do.call(rbind, lapply(Scenario_7, function(x) as.data.frame(t(x))))
 
 #Scenario 8
 Scenario_8 <- CPP_only(trt.effect <- c(0,0,0,0,0),
-                           mu.cur <- c(0.1980421,0.1210426,0.05792359,0,-0.05792359), 
-                           mu.history <- c(0.1980421,0.1210426,0.05792359,0,-0.05792359))
+                          mu.cur <- c(0.1980421,0.1980421,0.1980421,0.1980421,0.1980421), 
+                          mu.history <- c(0.1569446,0.1569446,0.1569446,0.1569446,0.1569446))
 
 Scenario_8_results <- do.call(rbind, lapply(Scenario_8, function(x) as.data.frame(t(x))))
 
-#############################################################################################
-addWorksheet(CPP_only_results_2, "Sheet1")
-writeData(CPP_only_results_2, "Sheet1", x = NULL)
-writeData(CPP_only_results_2, sheet = "Sheet1", c(Scenario_5_results,Scenario_6_results,
-                                                      Scenario_7_results,Scenario_8_results))
-saveWorkbook(CPP_only_results_2, "CPP_only_2_output.xlsx", overwrite = TRUE)
-##############################################################################################
-
 #Scenario 9
-Scenario_9 <- CPP_only(trt.effect <- c(0.9808293,0.9808293,0.9808293,0.9808293,0),
-                           mu.cur <- c(0.05792359,0.05792359,0.05792359,0.05792359,0.1980421), 
-                           mu.history <- c(0.05792359,0.05792359,0.05792359,0.05792359,0.1980421))
+Scenario_9 <- CPP_only(trt.effect <- c(0,0,0,0,0),
+                          mu.cur <- c(0.1980421,0.1210426,0.05792359,0,-0.05792359),
+                          mu.history <- c(0.2478002,0.1569446,0.08843417,0.02866724,-0.02866724))
 
 Scenario_9_results <- do.call(rbind, lapply(Scenario_9, function(x) as.data.frame(t(x))))
 
 #Scenario 10
-Scenario_10 <- CPP_only(trt.effect <- c(0.9808293,0.9808293,0.9808293,0,0),
-                            mu.cur <- c(0.05792359,0.05792359,0.05792359,0.1980421,0.1980421), 
-                            mu.history <- c(0.05792359,0.05792359,0.05792359,0.19804219,0.1980421))
-
+Scenario_10 <- CPP_only(trt.effect <- c(0,0,0,0,0),
+                           mu.cur <- c(0.1980421,0.1210426,0.05792359,0,-0.05792359), 
+                           mu.history <- c(0.1569446,0.08843417,0.02866724,-0.02866724,-0.08843417))
 Scenario_10_results <- do.call(rbind, lapply(Scenario_10, function(x) as.data.frame(t(x))))
-
-#Scenario 11
-Scenario_11 <- CPP_only(trt.effect <- c(0.9808293,0,0.8109302,0,0.9808293),
-                            mu.cur <- c(0.05792359,0.1210426,-0.05792359,0,-0.1980421), 
-                            mu.history <- c(0.05792359,0.1210426,-0.05792359,0,-0.1980421))
-
-Scenario_11_results <- do.call(rbind, lapply(Scenario_11, function(x) as.data.frame(t(x))))
-
-#Scenario 12
-Scenario_12 <- CPP_only(trt.effect <- c(0.9808293,0,0.8472979,0,0.8109302),
-                            mu.cur <- c(0.05792359,0.1569446,0,0.08843417,-0.05792359), 
-                            mu.history <- c(0.05792359,0.1569446,0,0.08843417,-0.05792359))
-
-Scenario_12_results <- do.call(rbind, lapply(Scenario_12, function(x) as.data.frame(t(x))))
-
 #############################################################################################
 addWorksheet(CPP_only_results_3, "Sheet1")
 writeData(CPP_only_results_3, "Sheet1", x = NULL)
-writeData(CPP_only_results_3, sheet = "Sheet1", c(Scenario_9_results,Scenario_10_results,
-                                                      Scenario_11_results,Scenario_12_results))
-saveWorkbook(CPP_only_results_3, "CPP_only_3_output.xlsx", overwrite = TRUE)
+writeData(CPP_only_results_3, sheet = "Sheet1", c(Scenario_7_results,Scenario_8_results,
+                                                     Scenario_9_results,Scenario_10_results))
+saveWorkbook(CPP_only_results_3, "CPP_only_results_3_output.xlsx", overwrite = TRUE)
 ##############################################################################################
 
+
+# random_mu.cur <- round(runif(5, min = 0, max = 1), 1)
+# random_trt.effect <- round(runif(1,min=0.5,max=1),1)
+# logit(random_mu.cur)/7
+# 
+# 
+#Scenario 11
+Scenario_11 <- CPP_only(trt.effect <- c(0.5389965,0,0.8472979,1.252763,0),
+                           mu.cur <- c(0.12104255,0.05792359,-0.12104255,-0.0579235,0.12104255),
+                           mu.history <- c(0.12104255,0.05792359,-0.12104255,-0.0579235,0.12104255))
+
+Scenario_11_results <- do.call(rbind, lapply(Scenario_11, function(x) as.data.frame(t(x))))
+
+
+#Scenario 12
+Scenario_12 <- CPP_only(trt.effect <- c(3.044522,0,0.4054651,0,2.197225),
+                           mu.cur <- c(-0.12104255,0.12104255,-0.0579235,0.3138892,0),
+                           mu.history <- c(-0.12104255,0.12104255,-0.0579235,0.3138892,0))
+
+Scenario_12_results <- do.call(rbind, lapply(Scenario_12, function(x) as.data.frame(t(x))))
+
+
 #Scenario 13
-Scenario_13 <- CPP_only(trt.effect <- c(0,0,0,0,0),
-                            mu.cur <- c(0.1980421,0.1980421,0.1980421,0.1980421,0.1980421), 
-                            mu.history <- c(0.2478002,0.2478002,0.2478002,0.2478002,0.2478002))
+Scenario_13 <- CPP_only(trt.effect = c(0, 0, 2.6026897, 0.4418328, 1.3499267),
+                           mu.cur = c(0.05792359, -0.12104255, -0.05792359, -0.12104255, -0.31388923),
+                           mu.history = c(0.05792359, -0.12104255, -0.05792359, -0.12104255, -0.31388923))
 
 Scenario_13_results <- do.call(rbind, lapply(Scenario_13, function(x) as.data.frame(t(x))))
+#
+#############################################################################################
+addWorksheet(CPP_only_results_4, "Sheet1")
+writeData(CPP_only_results_4, "Sheet1", x = NULL)
+writeData(CPP_only_results_4, sheet = "Sheet1", c(Scenario_11_results,Scenario_12_results,
+                                                     Scenario_13_results))
+saveWorkbook(CPP_only_results_4, "CPP_only_results_4_output.xlsx", overwrite = TRUE)
+##############################################################################################
 
-#Scenario 14
-Scenario_14 <- CPP_only(trt.effect <- c(0,0,0,0,0),
-                            mu.cur <- c(0.1980421,0.1980421,0.1980421,0.1980421,0.1980421), 
-                            mu.history <- c(0.1569446,0.1569446,0.1569446,0.1569446,0.1569446))
+##############################################################################################
+# 新增3个场景：响应审稿人关于 Heterogeneous Effect Sizes (0.1, 0.2, 0.3) 的建议
+# 旨在评估模型在梯度效应、以及强弱信号不对称分布下的稳健性
+##############################################################################################
 
+# 基础设定参考：
+# Mu = 0 (Base Rate ~ 0.5)
+# Delta = 0.1 -> trt.effect approx 0.4055
+# Delta = 0.3 -> trt.effect approx 1.3863
+# Null -> 0
+
+# Scenario 14: 梯度效应场景 (Gradient Effect)
+# 目的：测试模型区分不同疗效层次 (Null, 0.1, 0.2, 0.3) 的能力
+# # 设置: Null, 0.1, 0.2, 0.3, 0.2
+Scenario_14 <- CPP_only(trt.effect = c(0, 0.4054651, 0.8472979, 1.386294, 0.8472979),
+                        mu.cur = c(0, 0, 0, 0, 0), mu.history = c(0, 0, 0, 0, 0))
 Scenario_14_results <- do.call(rbind, lapply(Scenario_14, function(x) as.data.frame(t(x))))
-
-#Scenario 15
-Scenario_15 <- CPP_only(trt.effect <- c(0,0,0,0,0),
-                            mu.cur <- c(0.1980421,0.1210426,0.05792359,0,-0.05792359),
-                            mu.history <- c(0.2478002,0.1569446,0.08843417,0.02866724,-0.02866724))
-
+#
+#
+# # Scenario 15: 弱信号主导场景 (Weak Signal Dominance / Single Strong Outlier)
+# # 目的：测试单个强信号是否会过度拉高周围的弱信号。
+# # 设置: 0.3 (强), 0.1, 0.1, 0.1, 0 (无效)
+Scenario_15 <- CPP_only(trt.effect = c(1.386294, 0.4054651, 0.4054651, 0.4054651, 0),
+                        mu.cur = c(0, 0, 0, 0, 0),mu.history = c(0, 0, 0, 0, 0))
 Scenario_15_results <- do.call(rbind, lapply(Scenario_15, function(x) as.data.frame(t(x))))
-
-#Scenario 16
-Scenario_16 <- CPP_only(trt.effect <- c(0,0,0,0,0),
-                            mu.cur <- c(0.1980421,0.1210426,0.05792359,0,-0.05792359), 
-                            mu.history <- c(0.1569446,0.08843417,0.02866724,-0.02866724,-0.08843417))
-
+#
+#
+# # Scenario 16: 强信号主导场景 (Strong Signal Dominance / Single Weak Outlier)
+# # 目的：这是最关键的“膨胀测试”。测试当大多数亚组效果很好时，唯一的弱亚组是否会被错误地“拉高”从而导致误判。
+# # 设置: 0.1 (弱 - 重点观察对象), 0.3, 0.3, 0.3, 0.3 (全是强)
+Scenario_16 <- CPP_only(trt.effect = c(0.4054651, 1.386294, 1.386294, 1.386294, 1.386294),
+                        mu.cur = c(0, 0, 0, 0, 0),mu.history = c(0, 0, 0, 0, 0))
 Scenario_16_results <- do.call(rbind, lapply(Scenario_16, function(x) as.data.frame(t(x))))
-addWorksheet(CPP_only_results, "Sheet1")
-writeData(CPP_only_results, "Sheet1", x = NULL)
-writeData(CPP_only_results, sheet = "Sheet1", c(Scenario_1_results,Scenario_2_results,Scenario_3_results,
-                                                Scenario_4_results,Scenario_5_results,Scenario_6_results,
-                                                Scenario_7_results,Scenario_8_results,Scenario_9_results,
-                                                Scenario_10_results,Scenario_11_results,Scenario_12_results,
-                                                Scenario_13_results,Scenario_14_results,Scenario_15_results,
-                                                Scenario_16))
-saveWorkbook(CPP_only_results, "CPP_only_output.xlsx", overwrite = TRUE)
 
 
-
-
-
-
-
- 
+#############################################################################################
+addWorksheet(CPP_only_results_5, "Sheet1")
+writeData(CPP_only_results_5, "Sheet1", x = NULL)
+writeData(CPP_only_results_5, sheet = "Sheet1", c(Scenario_14_results,Scenario_15_results,
+                                                     Scenario_16_results))
+saveWorkbook(CPP_only_results_5, "CPP_only_results_5_output.xlsx", overwrite = TRUE)
+##############################################################################################
