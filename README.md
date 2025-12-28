@@ -1,2 +1,2 @@
-# BIRTH : Bayesian dynamic information borrowing for hybrid control basket trials.
+BIRTH: Bayesian Integration of Real-world data for Trials with Hybrid arms
 
